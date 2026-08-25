@@ -4,13 +4,14 @@ Code for transductive and fully inductive knowledge graph reasoning with a query
 
 ## Dependencies
 
-- python == 3.10
-- torch == 1.12.1
-- torch_scatter == 2.0.9
-- numpy == 1.21.6
-- scipy == 1.10.1
+- python == 3.10.20
+- torch == 2.5.1+cu121
+- torch_scatter == 2.1.2+pt25cu121
+- numpy == 1.26.4
+- scipy == 1.11.4
+- CUDA == 12.1
 
-CUDA is required. The PyTorch and torch-scatter builds must match the installed CUDA version.
+CUDA is required. The reported environment uses an NVIDIA A100-SXM4-80GB GPU. The PyTorch and torch-scatter builds must match the installed CUDA version.
 
 ## Reproduction
 
