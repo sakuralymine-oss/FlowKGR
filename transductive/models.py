@@ -74,14 +74,6 @@ class BellmanFordGNNLayer(nn.Module):
         self.Wr_attn = nn.Linear(dim, attn_dim, bias=False)
         self.Wqr_attn = nn.Linear(dim, attn_dim)
         self.w_alpha = nn.Linear(attn_dim, 1, bias=False)
-        
-        
-        self.message = nn.Sequential(
-            nn.Linear(dim * 6, dim * 2),
-            nn.LayerNorm(dim * 2),
-            nn.SiLU(),
-            nn.Linear(dim * 2, dim, bias=False),
-        )
         self.aggregate = nn.Sequential(
             nn.Linear(dim * 12, dim),
             nn.LayerNorm(dim),
@@ -123,18 +115,7 @@ class BellmanFordGNNLayer(nn.Module):
                 + self.Wqr_attn(r_query)
             )
             alpha = torch.sigmoid(self.w_alpha(attention_hidden))
-            message_input = torch.cat(
-                [
-                    h_src,
-                    r_edge,
-                    r_query,
-                    h_src * r_edge,
-                    r_edge * r_query,
-                    r_edge - r_query,
-                ],
-                dim=-1,
-            )
-            message = self.message(message_input) * alpha
+            message = h_src * r_edge * alpha
 
             degree = scatter(
                 torch.ones_like(dst, dtype=message.dtype),
