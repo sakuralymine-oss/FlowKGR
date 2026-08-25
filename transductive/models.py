@@ -420,16 +420,6 @@ class FMGNNReasoner(nn.Module):
         for layer in self.layers:
             layer.rela_embed = self.rela_embed
 
-        
-        
-        self.path_gru = nn.GRUCell(self.hidden_dim, self.hidden_dim)
-        
-        self.depth_attention = nn.Sequential(
-            nn.Linear(self.hidden_dim * 3, self.hidden_dim),
-            nn.SiLU(),
-            nn.Linear(self.hidden_dim, 1, bias=False),
-        )
-
         self.query_projection = nn.Sequential(
             nn.Linear(self.hidden_dim * 2, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
@@ -496,35 +486,6 @@ class FMGNNReasoner(nn.Module):
             torch.cat([pooled, self.rela_embed(q_rel)], dim=-1)
         )
 
-    def _recurrent_layer_update(
-        self,
-        proposal: torch.Tensor,
-        previous: torch.Tensor,
-        active: torch.Tensor,
-    ) -> torch.Tensor:
-        
-        updated = self.path_gru(proposal, previous)
-        updated = self.dropout(updated)
-        return updated * active.to(updated.dtype).unsqueeze(-1)
-
-    def _fuse_layer_states(
-        self,
-        layer_states,
-        q_rel: torch.Tensor,
-        nodes: torch.Tensor,
-    ) -> torch.Tensor:
-        
-        if not layer_states:
-            raise ValueError("at least one GNN layer state is required")
-        stacked = torch.stack(layer_states, dim=1)
-        query = self.rela_embed(q_rel)[nodes[:, 0]]
-        query = query.unsqueeze(1).expand(-1, stacked.size(1), -1)
-        depth_logits = self.depth_attention(
-            torch.cat([stacked, query, stacked * query], dim=-1)
-        ).squeeze(-1)
-        depth_weight = F.softmax(depth_logits, dim=1)
-        return torch.sum(depth_weight.unsqueeze(-1) * stacked, dim=1)
-
     def encode_candidates(self, subs, rels, mode: str = "train"):
         batch_size = len(subs)
         device = self.rela_embed.weight.device
@@ -551,18 +512,15 @@ class FMGNNReasoner(nn.Module):
             boundary[head_mask] = head_state[nodes[head_mask, 0]]
         hidden = boundary.clone()
         active = head_mask.clone()
-        layer_states = []
         encode_time = 0.0
         for layer in self.layers:
             encode_start = time.time()
-            proposal, active = layer(
+            hidden, active = layer(
                 q_rel, hidden, edges, boundary, active, nodes.size(0)
             )
-            hidden = self._recurrent_layer_update(proposal, hidden, active)
-            layer_states.append(hidden)
+            hidden = self.dropout(hidden)
             encode_time += time.time() - encode_start
 
-        hidden = self._fuse_layer_states(layer_states, q_rel, nodes)
         query_ctx = self._build_query_context(q_rel, nodes, hidden, batch_size)
         return q_rel, nodes, hidden, query_ctx, ppr_mask, search_time, encode_time
 
