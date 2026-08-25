@@ -133,18 +133,8 @@ def dataset_name(data_path):
     return os.path.basename(os.path.normpath(data_path))
 
 
-def _parse_int_list(text):
-    values = [int(part.strip()) for part in str(text).split(",") if part.strip()]
-    if not values or any(value < 1 for value in values):
-        raise ValueError("expected a comma-separated list of positive integers")
-    return values
 
 
-def _parse_float_list(text):
-    values = [float(part.strip()) for part in str(text).split(",") if part.strip()]
-    if not values:
-        raise ValueError("expected a comma-separated list of numbers")
-    return values
 
 
 def parse_args():
@@ -185,79 +175,8 @@ def parse_args():
     parser.add_argument("--fm_source_power", type=float, default=2.0)
     parser.add_argument("--fm_source_fraction", type=float, default=0.50)
     parser.add_argument("--target_negative_mass", type=float, default=0.05)
-    parser.add_argument(
-        "--analysis_all",
-        action="store_true",
-        help="run all five checkpoint-only analysis experiments and exit",
-    )
-    parser.add_argument(
-        "--analysis_paper_all",
-        action="store_true",
-        help=(
-            "run the five paper-facing analyses added for latent states, "
-            "flow difficulty, incomplete-evidence robustness, efficiency, "
-            "and case study; training behavior is unchanged"
-        ),
-    )
-    parser.add_argument("--analyze_latent_states", action="store_true")
-    parser.add_argument("--analyze_flow_difficulty", action="store_true")
-    parser.add_argument("--analyze_robustness", action="store_true")
-    parser.add_argument("--analyze_efficiency", action="store_true")
-    parser.add_argument("--analyze_case_study", action="store_true")
-    parser.add_argument("--analyze_multi_answer_case", action="store_true")
-    parser.add_argument("--analyze_vae_sources", action="store_true")
-    parser.add_argument("--multi_case_topk", type=int, default=10)
-    parser.add_argument(
-        "--multi_case_query_index",
-        type=int,
-        default=None,
-        help="optional forward multi-answer dataset query index",
-    )
-    parser.add_argument("--analyze_path_samples", action="store_true")
-    parser.add_argument("--analyze_latent", action="store_true")
-    parser.add_argument("--analyze_flow", action="store_true")
-    parser.add_argument("--analyze_ode_steps", action="store_true")
-    parser.add_argument("--analyze_candidate_budget", action="store_true")
-    parser.add_argument(
-        "--analysis_split", choices=("valid", "test"), default="test"
-    )
-    parser.add_argument(
-        "--path_sample_values", type=str, default="1,2,4,8"
-    )
-    parser.add_argument(
-        "--flow_tau_values", type=str, default="0,0.25,0.5,0.75,1"
-    )
-    parser.add_argument(
-        "--ode_step_values", type=str, default="1,2,4,8"
-    )
-    parser.add_argument(
-        "--candidate_topk_values", type=str, default="0.03,0.05,0.07,0.10"
-    )
-    parser.add_argument("--analysis_file", type=str, default=None)
-    parser.add_argument("--latent_sample_count", type=int, default=8)
-    parser.add_argument("--latent_analysis_topk", type=int, default=10)
-    parser.add_argument("--difficulty_max_depth", type=int, default=8)
-    parser.add_argument(
-        "--robustness_drop_values", type=str, default="0,0.1,0.2,0.3,0.4"
-    )
-    parser.add_argument(
-        "--robustness_seeds", type=str, default="1234,2234,3234"
-    )
-    parser.add_argument("--case_sample_count", type=int, default=3)
-    parser.add_argument("--case_topk", type=int, default=5)
-    parser.add_argument(
-        "--case_query_indices",
-        type=str,
-        default=None,
-        help=(
-            "optional comma-separated dataset query indices; when omitted, "
-            "one representative single-answer and one multi-answer forward "
-            "query are selected by median deterministic FM gain"
-        ),
-    )
     parser.add_argument("--unreached_score", type=float, default=-1e9)
     parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--perf_file", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--eval_only", action="store_true")
@@ -297,14 +216,6 @@ def parse_args():
         parser.error("--target_negative_mass must be in (0, 0.5)")
     if args.fm_warmup < 0 or args.fm_ramp < 0:
         parser.error("--fm_warmup and --fm_ramp must be non-negative")
-    if args.latent_sample_count < 2:
-        parser.error("--latent_sample_count must be at least two")
-    if args.multi_case_topk < 1:
-        parser.error("--multi_case_topk must be positive")
-    if args.latent_analysis_topk < 1 or args.case_topk < 1:
-        parser.error("analysis top-k values must be positive")
-    if args.difficulty_max_depth < 1 or args.case_sample_count < 1:
-        parser.error("difficulty depth and case sample count must be positive")
     return args
 
 
@@ -381,25 +292,6 @@ def main():
     opts = build_options(args, loader)
     model = BaseModel(opts, loader)
 
-    if any(
-        (
-            args.analysis_all,
-            args.analysis_paper_all,
-            args.analyze_path_samples,
-            args.analyze_latent,
-            args.analyze_flow,
-            args.analyze_ode_steps,
-            args.analyze_candidate_budget,
-            args.analyze_latent_states,
-            args.analyze_flow_difficulty,
-            args.analyze_robustness,
-            args.analyze_efficiency,
-            args.analyze_case_study,
-            args.analyze_multi_answer_case,
-            args.analyze_vae_sources,
-        )
-    ):
-        raise ValueError("diagnostic modes have been removed")
 
     run_tag = f"candidate_vae_condscorefm_nbf{opts.n_layer}"
     if args.remove_1hop_edges:
@@ -408,322 +300,7 @@ def main():
         args.data_path, "saveModel", f"{run_tag}_best.pt"
     )
     os.makedirs(os.path.dirname(os.path.abspath(checkpoint)), exist_ok=True)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    perf_file = args.perf_file or os.path.join(
-        project_root, "results", name, f"{run_tag}_results.txt"
-    )
-    os.makedirs(os.path.dirname(os.path.abspath(perf_file)), exist_ok=True)
 
-    config = (
-        f"dataset={name} lr={opts.lr:.4g} decay={opts.decay_rate:.4g} "
-        f"wd={opts.lamb:.6g} dim={opts.hidden_dim} attn={opts.attn_dim} "
-        f"layers={opts.n_layer} batch={opts.n_batch} dropout={opts.dropout:.4f} "
-        f"act={opts.act} one_shot_ppr_topk={opts.topk} "
-        f"fact_ratio={args.fact_ratio:.4f} remove_1hop_edges={args.remove_1hop_edges} "
-        f"ppr_alpha={args.ppr_alpha:.3f} ppr_iterations={args.ppr_iterations} "
-        f"loss=rank+con+vae_rec+kl+score_fm "
-        f"weights=({opts.rec_weight},{opts.con_weight},{opts.vae_rec_weight},"
-        f"{opts.kl_weight},{opts.fm_weight}) "
-        f"mask={opts.feature_mask_rate:.2f} fm_source_power={opts.fm_source_power:.2f} "
-        f"fm_source_fraction={opts.fm_source_fraction:.2f} "
-        f"target_negative_mass={opts.target_negative_mass:.3f} "
-        f"fm_warmup={opts.fm_warmup} fm_ramp={opts.fm_ramp} "
-        f"fm_max_weight={opts.fm_max_weight} ode_steps={opts.ode_steps}\n"
-    )
-    analysis_requested = (
-        args.analysis_all
-        or args.analysis_paper_all
-        or args.analyze_path_samples
-        or args.analyze_latent
-        or args.analyze_flow
-        or args.analyze_ode_steps
-        or args.analyze_candidate_budget
-        or args.analyze_latent_states
-        or args.analyze_flow_difficulty
-        or args.analyze_robustness
-        or args.analyze_efficiency
-        or args.analyze_case_study
-        or args.analyze_multi_answer_case
-        or args.analyze_vae_sources
-    )
-    if analysis_requested:
-        if not os.path.exists(checkpoint):
-            raise FileNotFoundError(
-                f"checkpoint not found for analysis: {checkpoint}"
-            )
-        saved = torch.load(checkpoint, map_location=f"cuda:{args.gpu}")
-        model.model.load_state_dict(saved["model_state_dict"], strict=True)
-        split = args.analysis_split
-        blocks = []
-
-        if args.analysis_all or args.analyze_path_samples:
-            sample_counts = _parse_int_list(args.path_sample_values)
-            rows = model.evaluate_path_sample_sweep(split, sample_counts)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} PATH-SAMPLE SWEEP",
-                    rows,
-                    ["samples", "MRR", "H1", "H10", "time", "peak_gb"],
-                )
-            )
-
-        if args.analysis_all or args.analyze_latent:
-            result = model.evaluate_latent_condition_variants(split)
-            rows = [
-                {"variant": name, **result[name]}
-                for name in ("FullZ", "ZeroZ", "ShuffledZ")
-            ]
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} LATENT-CONDITION DIAGNOSTIC",
-                    rows,
-                    ["variant", "MRR", "H1", "H10"],
-                )
-            )
-
-        if args.analysis_all or args.analyze_flow:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            rows, elapsed = model.evaluate_flow_evolution(split, tau_values)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} FLOW-EVOLUTION",
-                    rows,
-                    [
-                        "tau",
-                        "MRR",
-                        "MR",
-                        "H1",
-                        "H3",
-                        "H10",
-                        "MoveFromX0",
-                        "DistToX1",
-                        "GoldProb",
-                        "GoldMargin",
-                        "GoldMarginCov",
-                    ],
-                )
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analysis_all or args.analyze_ode_steps:
-            step_counts = _parse_int_list(args.ode_step_values)
-            rows = model.evaluate_ode_step_sweep(split, step_counts)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} ODE-STEP SWEEP",
-                    rows,
-                    ["steps", "MRR", "H1", "H10", "time", "peak_gb"],
-                )
-            )
-
-        if args.analysis_all or args.analyze_candidate_budget:
-            budgets = _parse_float_list(args.candidate_topk_values)
-            if any(value <= 0.0 for value in budgets):
-                raise ValueError("candidate_topk_values must all be positive")
-            rows = model.evaluate_candidate_budget_sweep(split, budgets)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} CANDIDATE-BUDGET SWEEP",
-                    rows,
-                    [
-                        "budget",
-                        "candidates",
-                        "PPRGraphAnsRec",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "time",
-                        "peak_gb",
-                    ],
-                )
-            )
-
-        if args.analysis_paper_all or args.analyze_latent_states:
-            rows, corr, elapsed = model.evaluate_latent_reasoning_states(
-                split,
-                sample_count=args.latent_sample_count,
-                topk=args.latent_analysis_topk,
-            )
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} LATENT-REASONING-STATE ANALYSIS",
-                    rows,
-                    [
-                        "answers",
-                        "queries",
-                        "LatentD",
-                        "PredJSD",
-                        "AR10_K1",
-                        "AR10_K",
-                        "DeltaAR10",
-                        "GoldCov10_K",
-                    ],
-                )
-                + f"\nLatentD_PredJSD_Corr\t{corr:.6f}"
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analysis_paper_all or args.analyze_flow_difficulty:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            rows, elapsed = model.evaluate_flow_by_query_difficulty(
-                split,
-                tau_values,
-                max_depth=args.difficulty_max_depth,
-            )
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} FLOW-DYNAMICS BY QUERY DIFFICULTY",
-                    rows,
-                    [
-                        "difficulty",
-                        "queries",
-                        "tau",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "GoldProb",
-                        "MoveFromX0",
-                        "DistToX1",
-                    ],
-                )
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analysis_paper_all or args.analyze_robustness:
-            drop_values = _parse_float_list(args.robustness_drop_values)
-            if any(value < 0.0 or value >= 1.0 for value in drop_values):
-                raise ValueError("robustness drop values must lie in [0, 1)")
-            robustness_seeds = _parse_int_list(args.robustness_seeds)
-            raw_rows, summary_rows = model.evaluate_incomplete_evidence_robustness(
-                split,
-                drop_values,
-                robustness_seeds,
-            )
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} INCOMPLETE-EVIDENCE ROBUSTNESS SUMMARY",
-                    summary_rows,
-                    [
-                        "drop",
-                        "MRR_mean",
-                        "MRR_std",
-                        "H10_mean",
-                        "H10_std",
-                        "PPRRecall_mean",
-                        "RelMRRDrop",
-                    ],
-                )
-                + "\n\n"
-                + model.format_analysis_rows(
-                    f"{split.upper()} INCOMPLETE-EVIDENCE ROBUSTNESS RAW",
-                    raw_rows,
-                    [
-                        "drop",
-                        "seed",
-                        "retained_edges",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "PPRGraphAnsRec",
-                        "time",
-                    ],
-                )
-            )
-
-        if args.analysis_paper_all or args.analyze_efficiency:
-            step_counts = _parse_int_list(args.ode_step_values)
-            rows = model.evaluate_efficiency_scalability(split, step_counts)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} EFFICIENCY-AND-SCALABILITY",
-                    rows,
-                    [
-                        "steps",
-                        "NFE",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "EndpointError",
-                        "fm_ms_per_query",
-                        "ms_per_query",
-                        "queries_per_sec",
-                        "peak_gb",
-                        "params_m",
-                    ],
-                )
-            )
-
-
-        if args.analyze_vae_sources:
-            rows, elapsed = model.evaluate_vae_source_interventions(split)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} VAE-SOURCE INTERVENTION",
-                    rows,
-                    ["variant", "MRR", "H1", "H10", "DeltaMRR"],
-                )
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analyze_multi_answer_case:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            case = model.evaluate_multi_answer_flow_case(
-                split,
-                tau_values,
-                topk=args.multi_case_topk,
-                case_index=args.multi_case_query_index,
-            )
-            blocks.append(
-                model.format_multi_answer_flow_case(
-                    f"{split.upper()} MULTI-ANSWER FLOW CASE", case
-                )
-            )
-
-        if args.analysis_paper_all or args.analyze_case_study:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            case_indices = (
-                _parse_int_list(args.case_query_indices)
-                if args.case_query_indices
-                else None
-            )
-            cases = model.evaluate_case_study(
-                split,
-                tau_values,
-                sample_count=args.case_sample_count,
-                topk=args.case_topk,
-                case_indices=case_indices,
-            )
-            blocks.append(
-                model.format_case_study(
-                    f"{split.upper()} REPRESENTATIVE CASE STUDY", cases
-                )
-            )
-
-        analysis_text = "\n\n".join(blocks) + "\n"
-        paper_analysis_requested = (
-            args.analysis_paper_all
-            or args.analyze_latent_states
-            or args.analyze_flow_difficulty
-            or args.analyze_robustness
-            or args.analyze_efficiency
-            or args.analyze_case_study
-            or args.analyze_multi_answer_case
-            or args.analyze_vae_sources
-        )
-        default_analysis_name = (
-            f"{run_tag}_paper_analysis.txt"
-            if paper_analysis_requested
-            else f"{run_tag}_analysis.txt"
-        )
-        analysis_file = args.analysis_file or os.path.join(
-            project_root, "results", name, default_analysis_name
-        )
-        os.makedirs(os.path.dirname(os.path.abspath(analysis_file)), exist_ok=True)
-        with open(analysis_file, "w", encoding="utf-8") as handle:
-            handle.write(args.data_path + "\n")
-            handle.write(config)
-            handle.write(analysis_text)
-        return
 
     if args.eval_only:
         if not os.path.exists(checkpoint):
@@ -767,8 +344,6 @@ def main():
         valid_str = model.format_metrics("VALID", valid_metrics)
         epoch_line = f"[EPOCH {epoch}] LOSS:{train_loss:.4f}\t{valid_str}"
         print(epoch_line)
-        with open(perf_file, "a", encoding="utf-8") as handle:
-            handle.write(epoch_line + "\n")
         if valid_metrics[0] > best_mrr:
             best_mrr = valid_metrics[0]
             best_epoch = epoch
@@ -792,9 +367,7 @@ def main():
     model.model.load_state_dict(saved["model_state_dict"], strict=True)
     test_metrics = model.evaluate_split("test")
     test_str = model.format_metrics("TEST", test_metrics)
-    final = f"[FINAL BEST EPOCH {best_epoch}] {best_valid}\t{test_str}\n"
-    with open(perf_file, "a", encoding="utf-8") as handle:
-        handle.write(final)
+    print(f"[FINAL BEST EPOCH {best_epoch}] {best_valid}\t{test_str}")
 
 
 if __name__ == "__main__":

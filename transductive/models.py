@@ -1,7 +1,6 @@
 
 
 import math
-import time
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
@@ -14,23 +13,14 @@ from torch_scatter import scatter
 @dataclass
 class CandidateState:
     scores: torch.Tensor
-    uniform_scores: torch.Tensor
-    zero_z_scores: Optional[torch.Tensor]
-    shuffled_z_scores: Optional[torch.Tensor]
     nodes: torch.Tensor
     hidden: torch.Tensor
     candidate_mask: torch.Tensor
-    ppr_candidate_mask: torch.Tensor
-    query_ctx: torch.Tensor
     mu: torch.Tensor
     logvar: torch.Tensor
     z: torch.Tensor
-    x0: torch.Tensor
-    x1: torch.Tensor
     recon_hidden: torch.Tensor
     corruption_mask: torch.Tensor
-    time_1: float
-    time_2: float
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -325,8 +315,6 @@ class FMGNNReasoner(nn.Module):
             feature_mask_rate=float(getattr(params, "feature_mask_rate", 0.30)),
         )
         self.vector_field = ConditionalScoreVectorField(self.hidden_dim)
-        self.time_1 = 0.0
-        self.time_2 = 0.0
 
     def _dense_from_node_logits(
         self,
@@ -367,7 +355,6 @@ class FMGNNReasoner(nn.Module):
         q_sub = torch.as_tensor(subs, dtype=torch.long, device=device)
         q_rel = torch.as_tensor(rels, dtype=torch.long, device=device)
 
-        search_start = time.time()
         nodes = self.loader.get_ppr_subgraph(
             q_sub.detach().cpu().numpy(), self.topk, mode
         )
@@ -378,8 +365,6 @@ class FMGNNReasoner(nn.Module):
         edges = self.loader.get_subgraph_edges(
             nodes.detach().cpu().numpy(), batch_size, mode
         )
-        search_time = time.time() - search_start
-
         boundary = torch.zeros((nodes.size(0), self.hidden_dim), device=device)
         head_mask = nodes[:, 1] == q_sub[nodes[:, 0]]
         if torch.any(head_mask):
@@ -387,22 +372,14 @@ class FMGNNReasoner(nn.Module):
             boundary[head_mask] = head_state[nodes[head_mask, 0]]
         hidden = boundary.clone()
         active = head_mask.clone()
-        encode_time = 0.0
         for layer in self.layers:
-            encode_start = time.time()
             hidden, active = layer(
                 q_rel, hidden, edges, boundary, active, nodes.size(0)
             )
             hidden = self.dropout(hidden)
-            encode_time += time.time() - encode_start
 
         query_ctx = self._build_query_context(q_rel, nodes, hidden, batch_size)
-        return q_rel, nodes, hidden, query_ctx, ppr_mask, search_time, encode_time
-
-    def _initial_score_state(self, nodes: torch.Tensor) -> torch.Tensor:
-        return torch.zeros(
-            (nodes.size(0), 1), dtype=self.rela_embed.weight.dtype, device=nodes.device
-        )
+        return q_rel, nodes, hidden, query_ctx, ppr_mask
 
     def _integrate_scores(
         self,
@@ -434,328 +411,11 @@ class FMGNNReasoner(nn.Module):
             state = state + dt * velocity_mid
         return state
 
-    def _integrate_scores_between(
-        self,
-        latent_condition: torch.Tensor,
-        row: torch.Tensor,
-        batch_size: int,
-        state: torch.Tensor,
-        tau_start: float,
-        tau_end: float,
-        steps: int,
-    ) -> torch.Tensor:
-        
-        if tau_end < tau_start:
-            raise ValueError("tau_end must be >= tau_start")
-        if tau_end == tau_start:
-            return state
-        steps = max(int(steps), 1)
-        dt = (float(tau_end) - float(tau_start)) / float(steps)
-        current_tau = float(tau_start)
-        for _ in range(steps):
-            tau0 = torch.full(
-                (state.size(0),),
-                current_tau,
-                dtype=state.dtype,
-                device=state.device,
-            )
-            taum = tau0 + 0.5 * dt
-            velocity_start = self.vector_field(
-                state, latent_condition, tau0, row, batch_size
-            )
-            midpoint = state + 0.5 * dt * velocity_start
-            velocity_mid = self.vector_field(
-                midpoint, latent_condition, taum, row, batch_size
-            )
-            state = state + dt * velocity_mid
-            current_tau += dt
-        return state
 
-    def flow_checkpoint_scores(
-        self,
-        subs,
-        rels,
-        checkpoints,
-        mode: str = "eval",
-    ):
-        
-        checkpoints = sorted({float(value) for value in checkpoints})
-        if not checkpoints:
-            raise ValueError("at least one flow checkpoint is required")
-        if checkpoints[0] < 0.0 or checkpoints[-1] > 1.0:
-            raise ValueError("flow checkpoints must lie in [0, 1]")
-        batch_size = len(subs)
-        (
-            _,
-            nodes,
-            hidden,
-            query_ctx,
-            _,
-            _,
-            _,
-        ) = self.encode_candidates(subs, rels, mode)
-        row = nodes[:, 0]
-        entity_state = self.entity_state(nodes[:, 1])
 
-        mu, _, _ = self.candidate_vae.encode(
-            hidden, query_ctx[row], entity_state, corrupt=False
-        )
-        latent = mu
 
-        state = torch.zeros(
-            (latent.size(0), 1), dtype=latent.dtype, device=latent.device
-        )
-        result = {}
-        current_tau = 0.0
-        if 0.0 in checkpoints:
-            result[0.0] = self._node_scores(nodes, state, batch_size)
 
-        for tau_end in [value for value in checkpoints if value > 0.0]:
-            interval = tau_end - current_tau
-            interval_steps = max(
-                1, int(round(max(self.ode_steps, 1) * interval))
-            )
-            state = self._integrate_scores_between(
-                latent,
-                row,
-                batch_size,
-                state,
-                current_tau,
-                tau_end,
-                interval_steps,
-            )
-            current_tau = tau_end
-            result[tau_end] = self._node_scores(nodes, state, batch_size)
-        return result
 
-    def flow_checkpoint_trajectory(
-        self,
-        subs,
-        rels,
-        checkpoints,
-        mode: str = "eval",
-    ):
-        
-        requested = sorted({float(value) for value in checkpoints})
-        if not requested:
-            raise ValueError("at least one flow checkpoint is required")
-        if requested[0] < 0.0 or requested[-1] > 1.0:
-            raise ValueError("flow checkpoints must lie in [0, 1]")
-        
-        
-        integration_points = sorted(set(requested + [1.0]))
-        batch_size = len(subs)
-        (
-            _,
-            nodes,
-            hidden,
-            query_ctx,
-            _,
-            _,
-            _,
-        ) = self.encode_candidates(subs, rels, mode)
-        row = nodes[:, 0]
-        entity_state = self.entity_state(nodes[:, 1])
-
-        mu, _, _ = self.candidate_vae.encode(
-            hidden, query_ctx[row], entity_state, corrupt=False
-        )
-        latent = mu
-
-        state = torch.zeros(
-            (latent.size(0), 1), dtype=latent.dtype, device=latent.device
-        )
-        score_map = {}
-        state_map = {}
-        current_tau = 0.0
-
-        if 0.0 in integration_points:
-            state_map[0.0] = state.clone()
-            score_map[0.0] = self._node_scores(nodes, state, batch_size)
-
-        for tau_end in [value for value in integration_points if value > 0.0]:
-            interval = tau_end - current_tau
-            interval_steps = max(
-                1, int(round(max(self.ode_steps, 1) * interval))
-            )
-            state = self._integrate_scores_between(
-                latent,
-                row,
-                batch_size,
-                state,
-                current_tau,
-                tau_end,
-                interval_steps,
-            )
-            current_tau = tau_end
-            state_map[tau_end] = state.clone()
-            score_map[tau_end] = self._node_scores(nodes, state, batch_size)
-
-        return score_map, state_map, nodes
-
-    def ode_step_endpoint_sweep(
-        self,
-        subs,
-        rels,
-        step_counts,
-        mode: str = "eval",
-    ):
-        
-        step_counts = sorted({int(value) for value in step_counts})
-        if not step_counts or any(value < 1 for value in step_counts):
-            raise ValueError("ODE step counts must be positive")
-
-        batch_size = len(subs)
-        (
-            _,
-            nodes,
-            hidden,
-            query_ctx,
-            _,
-            _,
-            _,
-        ) = self.encode_candidates(subs, rels, mode)
-        row = nodes[:, 0]
-        entity_state = self.entity_state(nodes[:, 1])
-
-        mu, _, _ = self.candidate_vae.encode(
-            hidden, query_ctx[row], entity_state, corrupt=False
-        )
-        latent = mu
-
-        original_steps = int(self.ode_steps)
-        endpoints = {}
-        fm_seconds = {}
-        try:
-            for steps in step_counts:
-                self.ode_steps = steps
-                if latent.is_cuda:
-                    torch.cuda.synchronize(latent.device)
-                start_time = time.perf_counter()
-                endpoint = self._integrate_scores(latent, row, batch_size)
-                if latent.is_cuda:
-                    torch.cuda.synchronize(latent.device)
-                fm_seconds[steps] = time.perf_counter() - start_time
-                endpoints[steps] = endpoint.detach().clone()
-        finally:
-            self.ode_steps = original_steps
-        return nodes, endpoints, fm_seconds
-
-    def sampled_latent_predictions(
-        self,
-        subs,
-        rels,
-        sample_count: int,
-        mode: str = "eval",
-    ):
-        
-        sample_count = int(sample_count)
-        if sample_count < 2:
-            raise ValueError("sample_count must be at least two")
-        batch_size = len(subs)
-        (
-            _,
-            nodes,
-            hidden,
-            query_ctx,
-            _,
-            _,
-            _,
-        ) = self.encode_candidates(subs, rels, mode)
-        row = nodes[:, 0]
-        entity_state = self.entity_state(nodes[:, 1])
-        mu, logvar, _ = self.candidate_vae.encode(
-            hidden, query_ctx[row], entity_state, corrupt=False
-        )
-
-        latent_paths = []
-        score_paths = []
-        state_paths = []
-        for _ in range(sample_count):
-            latent = self.candidate_vae.reparameterize(mu, logvar, sample=True)
-            endpoint = self._integrate_scores(latent, row, batch_size)
-            latent_paths.append(latent)
-            state_paths.append(endpoint)
-            score_paths.append(self._node_scores(nodes, endpoint, batch_size))
-        return (
-            nodes,
-            torch.stack(latent_paths, dim=0),
-            torch.stack(score_paths, dim=0),
-            torch.stack(state_paths, dim=0),
-        )
-
-    def sampled_flow_checkpoint_trajectory(
-        self,
-        subs,
-        rels,
-        checkpoints,
-        sample_count: int,
-        mode: str = "eval",
-    ):
-        
-        requested = sorted({float(value) for value in checkpoints})
-        if not requested:
-            raise ValueError("at least one flow checkpoint is required")
-        if requested[0] < 0.0 or requested[-1] > 1.0:
-            raise ValueError("flow checkpoints must lie in [0, 1]")
-        sample_count = int(sample_count)
-        if sample_count < 1:
-            raise ValueError("sample_count must be positive")
-
-        integration_points = sorted(set(requested + [1.0]))
-        batch_size = len(subs)
-        (
-            _,
-            nodes,
-            hidden,
-            query_ctx,
-            _,
-            _,
-            _,
-        ) = self.encode_candidates(subs, rels, mode)
-        row = nodes[:, 0]
-        entity_state = self.entity_state(nodes[:, 1])
-        mu, logvar, _ = self.candidate_vae.encode(
-            hidden, query_ctx[row], entity_state, corrupt=False
-        )
-
-        samples = []
-        for _ in range(sample_count):
-            latent = self.candidate_vae.reparameterize(mu, logvar, sample=True)
-            state = torch.zeros(
-                (latent.size(0), 1), dtype=latent.dtype, device=latent.device
-            )
-            score_map = {}
-            state_map = {}
-            current_tau = 0.0
-            if 0.0 in integration_points:
-                state_map[0.0] = state.clone()
-                score_map[0.0] = self._node_scores(nodes, state, batch_size)
-            for tau_end in [value for value in integration_points if value > 0.0]:
-                interval = tau_end - current_tau
-                interval_steps = max(
-                    1, int(round(max(self.ode_steps, 1) * interval))
-                )
-                state = self._integrate_scores_between(
-                    latent,
-                    row,
-                    batch_size,
-                    state,
-                    current_tau,
-                    tau_end,
-                    interval_steps,
-                )
-                current_tau = tau_end
-                state_map[tau_end] = state.clone()
-                score_map[tau_end] = self._node_scores(nodes, state, batch_size)
-            samples.append(
-                {
-                    "latent": latent,
-                    "score_map": score_map,
-                    "state_map": state_map,
-                }
-            )
-        return samples, nodes
 
     def _node_scores(
         self,
@@ -768,65 +428,6 @@ class FMGNNReasoner(nn.Module):
         )
         return F.log_softmax(dense_logits, dim=1)
 
-    @staticmethod
-    def _shuffle_latent(latent: torch.Tensor) -> torch.Tensor:
-        if latent.size(0) <= 1:
-            return latent
-        shift = max(1, latent.size(0) // 2)
-        return torch.roll(latent, shifts=shift, dims=0)
-
-    def vae_source_intervention_scores(
-        self,
-        subs,
-        rels,
-        mode: str = "eval",
-    ):
-        
-        batch_size = len(subs)
-        (
-            _,
-            nodes,
-            hidden,
-            query_ctx,
-            _,
-            _,
-            _,
-        ) = self.encode_candidates(subs, rels, mode)
-        row = nodes[:, 0]
-        query_state = query_ctx[row]
-        entity_state = self.entity_state(nodes[:, 1])
-
-        variants = {
-            "Full": (hidden, query_state, entity_state),
-            "ZeroGraphEvidence": (
-                torch.zeros_like(hidden),
-                query_state,
-                entity_state,
-            ),
-            "ZeroQueryContext": (
-                hidden,
-                torch.zeros_like(query_state),
-                entity_state,
-            ),
-            "ZeroEntityState": (
-                hidden,
-                query_state,
-                torch.zeros_like(entity_state),
-            ),
-        }
-
-        score_map = {}
-        for name, (hidden_i, query_i, entity_i) in variants.items():
-            mu, _, _ = self.candidate_vae.encode(
-                hidden_i,
-                query_i,
-                entity_i,
-                corrupt=False,
-            )
-            x1 = self._integrate_scores(mu, row, batch_size)
-            score_map[name] = self._node_scores(nodes, x1, batch_size)
-        return score_map
-
     def forward(
         self,
         subs,
@@ -835,7 +436,6 @@ class FMGNNReasoner(nn.Module):
         sample_z: bool = False,
         return_aux: bool = False,
         path_samples: Optional[int] = None,
-        diagnose_latent: bool = False,
     ):
         batch_size = len(subs)
         (
@@ -843,9 +443,7 @@ class FMGNNReasoner(nn.Module):
             nodes,
             hidden,
             query_ctx,
-            ppr_candidate_mask,
-            search_time,
-            encode_time,
+            candidate_mask,
         ) = self.encode_candidates(subs, rels, mode)
         del q_rel
         row = nodes[:, 0]
@@ -861,7 +459,6 @@ class FMGNNReasoner(nn.Module):
 
         final_score_paths = []
         latent_paths = []
-        final_state_paths = []
         recon_hidden = None
         for path_index in range(path_samples):
             should_sample = self.training or sample_z or path_index > 0
@@ -871,49 +468,23 @@ class FMGNNReasoner(nn.Module):
             x1 = self._integrate_scores(z, row, batch_size)
             final_score_paths.append(self._node_scores(nodes, x1, batch_size))
             latent_paths.append(z)
-            final_state_paths.append(x1)
 
         scores = torch.logsumexp(
             torch.stack(final_score_paths, dim=0), dim=0
         ) - math.log(float(path_samples))
         z_mean = torch.stack(latent_paths, dim=0).mean(dim=0)
-        x1_mean = torch.stack(final_state_paths, dim=0).mean(dim=0)
-        x0 = self._initial_score_state(nodes).to(x1_mean)
-        uniform_scores = self._node_scores(nodes, x0, batch_size)
-
-        zero_z_scores = None
-        shuffled_z_scores = None
-        if diagnose_latent:
-            zero_z = torch.zeros_like(mu)
-            zero_x1 = self._integrate_scores(zero_z, row, batch_size)
-            zero_z_scores = self._node_scores(nodes, zero_x1, batch_size)
-            shuffled_z = self._shuffle_latent(mu)
-            shuffled_x1 = self._integrate_scores(shuffled_z, row, batch_size)
-            shuffled_z_scores = self._node_scores(nodes, shuffled_x1, batch_size)
-
-        self.time_1 = search_time
-        self.time_2 = encode_time
         if not return_aux:
             return scores
         return CandidateState(
             scores=scores,
-            uniform_scores=uniform_scores,
-            zero_z_scores=zero_z_scores,
-            shuffled_z_scores=shuffled_z_scores,
             nodes=nodes,
             hidden=hidden,
-            candidate_mask=ppr_candidate_mask,
-            ppr_candidate_mask=ppr_candidate_mask,
-            query_ctx=query_ctx,
+            candidate_mask=candidate_mask,
             mu=mu,
             logvar=logvar,
             z=z_mean,
-            x0=x0,
-            x1=x1_mean,
             recon_hidden=recon_hidden,
             corruption_mask=corruption_mask,
-            time_1=search_time,
-            time_2=encode_time,
         )
 
     @staticmethod
@@ -1142,7 +713,7 @@ class FMGNNReasoner(nn.Module):
         )
         vae_rec = self.vae_reconstruction_loss(state)
         kl = self.kl_loss(state)
-        fm, fm_source = self.score_fm_loss(state, labels)
+        fm, _ = self.score_fm_loss(state, labels)
         total = (
             weights.get("rec", 1.0) * rank_loss
             + weights.get("con", 1.0) * contrastive
@@ -1150,16 +721,4 @@ class FMGNNReasoner(nn.Module):
             + weights.get("kl", 1e-4) * kl
             + weights.get("fm", 1.0) * fm
         )
-        latent_std = torch.exp(0.5 * state.logvar).mean()
-        score_move = (state.x1 - state.x0).abs().mean()
-        return {
-            "loss": total,
-            "L_rec": rank_loss,
-            "L_con": contrastive,
-            "VAE_REC": vae_rec,
-            "KL": kl,
-            "L_FM": fm,
-            "FM_SOURCE": fm_source,
-            "LatentStd": latent_std,
-            "ScoreMove": score_move,
-        }
+        return {"loss": total}
