@@ -28,11 +28,11 @@ DATASET_CONFIG = {
 
 DATASET_RUN_CONFIG = {
     "family": {
-        "epochs": 250,
+        "epochs": 130,
         "eval_interval": 1,
         "fact_ratio": 0.80,
         "topk": 3007,
-        "layers": 3,
+        "layers": 8,
         "batch_size": 8,
         "ppr_alpha": 0.25,
         "ppr_iterations": 20,
@@ -40,11 +40,11 @@ DATASET_RUN_CONFIG = {
         "gpu": 0,
     },
     "umls": {
-        "epochs": 300,
+        "epochs": 130,
         "eval_interval": 1,
         "fact_ratio": 0.90,
         "topk": 135,
-        "layers": 6,
+        "layers": 5,
         "batch_size": 16,
         "ppr_alpha": 0.2,
         "ppr_iterations": 20,
@@ -53,11 +53,11 @@ DATASET_RUN_CONFIG = {
         "gpu": 0,
     },
     "WN18RR": {
-        "epochs": 450,
+        "epochs": 130,
         "eval_interval": 1,
         "fact_ratio": 0.80,
         "topk": 0.17,
-        "layers": 7,
+        "layers": 8,
         "batch_size": 24,
         "ppr_alpha": 0.12,
         "ppr_iterations": 20,
@@ -66,11 +66,11 @@ DATASET_RUN_CONFIG = {
         "gpu": 0,
     },
     "fb15k-237": {
-        "epochs": 200,
+        "epochs": 130,
         "eval_interval": 1,
         "fact_ratio": 0.99,
         "topk": 0.2,
-        "layers": 3,
+        "layers": 7,
         "batch_size": 8,
         "ppr_alpha": 0.15,
         "ppr_iterations": 20,
@@ -82,11 +82,11 @@ DATASET_RUN_CONFIG = {
         "remove_1hop_edges": True,
     },
     "nell": {
-        "epochs": 400,
+        "epochs": 130,
         "eval_interval": 1,
         "fact_ratio": 0.99,
         "topk": 0.05,
-        "layers": 3,
+        "layers": 6,
         "batch_size": 8,
         "ppr_alpha": 0.12,
         "ppr_iterations": 20,
@@ -94,11 +94,11 @@ DATASET_RUN_CONFIG = {
         "gpu": 0,
     },
     "YAGO": {
-        "epochs": 150,
+        "epochs": 130,
         "eval_interval": 1,
         "fact_ratio": 0.995,
         "topk": 0.01,
-        "layers": 3,
+        "layers": 8,
         "batch_size": 16,
         "ppr_alpha": 0.15,
         "ppr_iterations": 20,
@@ -112,7 +112,7 @@ DATASET_RUN_CONFIG = {
 
 
 RUNTIME_DEFAULTS = {
-    "epochs": 80,
+    "epochs": 130,
     "eval_interval": 1,
     "layers": 6,
     "topk": -1,
