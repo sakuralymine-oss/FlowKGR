@@ -158,18 +158,15 @@ class CandidateDenoisingVAE(nn.Module):
         self,
         dim: int,
         feature_mask_rate: float,
-        deterministic: bool = False,
     ):
         super().__init__()
         self.dim = dim
         self.feature_mask_rate = float(feature_mask_rate)
-        self.deterministic = bool(deterministic)
-        encoder_output_dim = dim if self.deterministic else dim * 2
         self.encoder = nn.Sequential(
             nn.Linear(dim * 3, dim * 2),
             nn.LayerNorm(dim * 2),
             nn.SiLU(),
-            nn.Linear(dim * 2, encoder_output_dim),
+            nn.Linear(dim * 2, dim * 2),
         )
         self.decoder = nn.Sequential(
             nn.Linear(dim, dim * 2),
@@ -194,9 +191,6 @@ class CandidateDenoisingVAE(nn.Module):
         encoded = self.encoder(
             torch.cat([corrupted_hidden, query_ctx, entity_state], dim=-1)
         )
-        if self.deterministic:
-            latent = encoded
-            return latent, torch.zeros_like(latent), corruption_mask
         mu, logvar = encoded.chunk(2, dim=-1)
         return mu, logvar.clamp(min=-10.0, max=5.0), corruption_mask
 
@@ -210,38 +204,6 @@ class CandidateDenoisingVAE(nn.Module):
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
         return self.decoder(latent)
-
-
-class PlainCandidateEncoder(nn.Module):
-    
-
-    def __init__(self, dim: int, feature_mask_rate: float):
-        super().__init__()
-        self.feature_mask_rate = float(feature_mask_rate)
-        self.encoder = nn.Sequential(
-            nn.Linear(dim * 3, dim * 2),
-            nn.LayerNorm(dim * 2),
-            nn.SiLU(),
-            nn.Linear(dim * 2, dim),
-        )
-
-    def forward(
-        self,
-        hidden: torch.Tensor,
-        query_ctx: torch.Tensor,
-        entity_state: torch.Tensor,
-        corrupt: bool,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if corrupt and self.feature_mask_rate > 0.0:
-            corruption_mask = torch.rand_like(hidden).lt(self.feature_mask_rate)
-            encoder_hidden = hidden.masked_fill(corruption_mask, 0.0)
-        else:
-            corruption_mask = torch.zeros_like(hidden, dtype=torch.bool)
-            encoder_hidden = hidden
-        latent = self.encoder(
-            torch.cat([encoder_hidden, query_ctx, entity_state], dim=-1)
-        )
-        return latent, corruption_mask
 
 
 class ConditionalScoreVectorField(nn.Module):
@@ -314,63 +276,6 @@ class ConditionalScoreVectorField(nn.Module):
         return self.velocity(torch.cat([token, context, token * context], dim=-1))
 
 
-class DirectSetPredictor(nn.Module):
-    
-
-    def __init__(self, dim: int):
-        super().__init__()
-        
-        
-        
-        self.token_projection = nn.Sequential(
-            nn.Linear(dim, dim * 3),
-            nn.LayerNorm(dim * 3),
-            nn.SiLU(),
-            nn.Linear(dim * 3, dim * 2),
-            nn.LayerNorm(dim * 2),
-            nn.SiLU(),
-            nn.Linear(dim * 2, dim),
-            nn.LayerNorm(dim),
-            nn.SiLU(),
-        )
-        self.context_score = nn.Linear(dim, 1, bias=False)
-        self.endpoint = nn.Sequential(
-            nn.Linear(dim * 3, dim * 2),
-            nn.LayerNorm(dim * 2),
-            nn.SiLU(),
-            nn.Linear(dim * 2, dim),
-            nn.SiLU(),
-            nn.Linear(dim, 1),
-        )
-        nn.init.zeros_(self.endpoint[-1].weight)
-        nn.init.zeros_(self.endpoint[-1].bias)
-
-    def forward(
-        self,
-        latent_condition: torch.Tensor,
-        row: torch.Tensor,
-        batch_size: int,
-    ) -> torch.Tensor:
-        token = self.token_projection(latent_condition)
-        attention_logits = self.context_score(token).squeeze(-1)
-        row_max = scatter(
-            attention_logits, row, dim=0, dim_size=batch_size, reduce="max"
-        )[row]
-        attention = torch.exp(attention_logits - row_max)
-        denominator = scatter(
-            attention, row, dim=0, dim_size=batch_size, reduce="sum"
-        )[row].clamp_min(1e-12)
-        attention = attention / denominator
-        context = scatter(
-            attention.unsqueeze(-1) * token,
-            row,
-            dim=0,
-            dim_size=batch_size,
-            reduce="sum",
-        )[row]
-        return self.endpoint(torch.cat([token, context, token * context], dim=-1))
-
-
 class FMGNNReasoner(nn.Module):
     
 
@@ -388,18 +293,6 @@ class FMGNNReasoner(nn.Module):
         self.fm_source_power = float(getattr(params, "fm_source_power", 2.0))
         self.fm_source_fraction = float(getattr(params, "fm_source_fraction", 0.50))
         self.target_negative_mass = float(getattr(params, "target_negative_mass", 0.05))
-        self.deterministic_vae = bool(getattr(params, "deterministic_vae", False))
-        self.static_scorer = bool(getattr(params, "static_scorer", False))
-        self.disable_fm = bool(getattr(params, "disable_fm", False))
-        self.ablate_direct_predictor = bool(
-            getattr(params, "ablate_direct_predictor", False)
-        )
-        self.ablate_plain_encoder = bool(
-            getattr(params, "ablate_plain_encoder", False)
-        )
-        self.fm_condition_hidden = bool(
-            getattr(params, "fm_condition_hidden", False)
-        )
 
         activations = {
             "relu": nn.ReLU(),
@@ -427,29 +320,11 @@ class FMGNNReasoner(nn.Module):
         )
         self.entity_state = nn.Embedding(self.loader.n_ent, self.hidden_dim)
         nn.init.xavier_uniform_(self.entity_state.weight)
-        self.candidate_vae = (
-            None
-            if self.ablate_plain_encoder or self.fm_condition_hidden
-            else CandidateDenoisingVAE(
-                self.hidden_dim,
-                feature_mask_rate=float(getattr(params, "feature_mask_rate", 0.30)),
-                deterministic=self.deterministic_vae,
-            )
-        )
-        self.plain_candidate_encoder = (
-            PlainCandidateEncoder(
-                self.hidden_dim,
-                feature_mask_rate=float(getattr(params, "feature_mask_rate", 0.30)),
-            )
-            if self.ablate_plain_encoder
-            else None
+        self.candidate_vae = CandidateDenoisingVAE(
+            self.hidden_dim,
+            feature_mask_rate=float(getattr(params, "feature_mask_rate", 0.30)),
         )
         self.vector_field = ConditionalScoreVectorField(self.hidden_dim)
-        self.direct_predictor = (
-            DirectSetPredictor(self.hidden_dim)
-            if self.ablate_direct_predictor
-            else None
-        )
         self.time_1 = 0.0
         self.time_2 = 0.0
 
@@ -540,17 +415,6 @@ class FMGNNReasoner(nn.Module):
             dtype=latent_condition.dtype,
             device=latent_condition.device,
         )
-        if self.disable_fm:
-            return state
-        if self.ablate_direct_predictor:
-            return self.direct_predictor(latent_condition, row, batch_size)
-        if self.static_scorer:
-            tau = torch.zeros(
-                state.size(0), dtype=state.dtype, device=state.device
-            )
-            return self.vector_field(
-                state, latent_condition, tau, row, batch_size
-            )
         dt = 1.0 / float(self.ode_steps)
         for step in range(self.ode_steps):
             tau_start = torch.full(
@@ -585,10 +449,6 @@ class FMGNNReasoner(nn.Module):
             raise ValueError("tau_end must be >= tau_start")
         if tau_end == tau_start:
             return state
-        if self.disable_fm or self.ablate_direct_predictor or self.static_scorer:
-            raise ValueError(
-                "flow-evolution analysis is defined for the full ODE/FM model only"
-            )
         steps = max(int(steps), 1)
         dt = (float(tau_end) - float(tau_start)) / float(steps)
         current_tau = float(tau_start)
@@ -624,11 +484,6 @@ class FMGNNReasoner(nn.Module):
             raise ValueError("at least one flow checkpoint is required")
         if checkpoints[0] < 0.0 or checkpoints[-1] > 1.0:
             raise ValueError("flow checkpoints must lie in [0, 1]")
-        if self.disable_fm or self.ablate_direct_predictor or self.static_scorer:
-            raise ValueError(
-                "flow-evolution analysis requires the full ODE/FM model"
-            )
-
         batch_size = len(subs)
         (
             _,
@@ -642,15 +497,10 @@ class FMGNNReasoner(nn.Module):
         row = nodes[:, 0]
         entity_state = self.entity_state(nodes[:, 1])
 
-        if self.ablate_plain_encoder:
-            latent, _ = self.plain_candidate_encoder(
-                hidden, query_ctx[row], entity_state, corrupt=False
-            )
-        else:
-            mu, _, _ = self.candidate_vae.encode(
-                hidden, query_ctx[row], entity_state, corrupt=False
-            )
-            latent = mu
+        mu, _, _ = self.candidate_vae.encode(
+            hidden, query_ctx[row], entity_state, corrupt=False
+        )
+        latent = mu
 
         state = torch.zeros(
             (latent.size(0), 1), dtype=latent.dtype, device=latent.device
@@ -691,11 +541,6 @@ class FMGNNReasoner(nn.Module):
             raise ValueError("at least one flow checkpoint is required")
         if requested[0] < 0.0 or requested[-1] > 1.0:
             raise ValueError("flow checkpoints must lie in [0, 1]")
-        if self.disable_fm or self.ablate_direct_predictor or self.static_scorer:
-            raise ValueError(
-                "flow-trajectory analysis requires the full ODE/FM model"
-            )
-
         
         
         integration_points = sorted(set(requested + [1.0]))
@@ -712,15 +557,10 @@ class FMGNNReasoner(nn.Module):
         row = nodes[:, 0]
         entity_state = self.entity_state(nodes[:, 1])
 
-        if self.ablate_plain_encoder:
-            latent, _ = self.plain_candidate_encoder(
-                hidden, query_ctx[row], entity_state, corrupt=False
-            )
-        else:
-            mu, _, _ = self.candidate_vae.encode(
-                hidden, query_ctx[row], entity_state, corrupt=False
-            )
-            latent = mu
+        mu, _, _ = self.candidate_vae.encode(
+            hidden, query_ctx[row], entity_state, corrupt=False
+        )
+        latent = mu
 
         state = torch.zeros(
             (latent.size(0), 1), dtype=latent.dtype, device=latent.device
@@ -761,10 +601,6 @@ class FMGNNReasoner(nn.Module):
         mode: str = "eval",
     ):
         
-        if self.disable_fm or self.ablate_direct_predictor or self.static_scorer:
-            raise ValueError(
-                "ODE numerical analysis requires the full ODE/FM model"
-            )
         step_counts = sorted({int(value) for value in step_counts})
         if not step_counts or any(value < 1 for value in step_counts):
             raise ValueError("ODE step counts must be positive")
@@ -782,15 +618,10 @@ class FMGNNReasoner(nn.Module):
         row = nodes[:, 0]
         entity_state = self.entity_state(nodes[:, 1])
 
-        if self.ablate_plain_encoder:
-            latent, _ = self.plain_candidate_encoder(
-                hidden, query_ctx[row], entity_state, corrupt=False
-            )
-        else:
-            mu, _, _ = self.candidate_vae.encode(
-                hidden, query_ctx[row], entity_state, corrupt=False
-            )
-            latent = mu
+        mu, _, _ = self.candidate_vae.encode(
+            hidden, query_ctx[row], entity_state, corrupt=False
+        )
+        latent = mu
 
         original_steps = int(self.ode_steps)
         endpoints = {}
@@ -821,11 +652,6 @@ class FMGNNReasoner(nn.Module):
         sample_count = int(sample_count)
         if sample_count < 2:
             raise ValueError("sample_count must be at least two")
-        if self.ablate_plain_encoder or self.deterministic_vae:
-            raise ValueError(
-                "latent diversity analysis requires the stochastic full VAE"
-            )
-
         batch_size = len(subs)
         (
             _,
@@ -872,14 +698,6 @@ class FMGNNReasoner(nn.Module):
             raise ValueError("at least one flow checkpoint is required")
         if requested[0] < 0.0 or requested[-1] > 1.0:
             raise ValueError("flow checkpoints must lie in [0, 1]")
-        if self.disable_fm or self.ablate_direct_predictor or self.static_scorer:
-            raise ValueError(
-                "sampled flow trajectories require the full ODE/FM model"
-            )
-        if self.ablate_plain_encoder or self.deterministic_vae:
-            raise ValueError(
-                "sampled case-study trajectories require the stochastic full VAE"
-            )
         sample_count = int(sample_count)
         if sample_count < 1:
             raise ValueError("sample_count must be positive")
@@ -964,11 +782,6 @@ class FMGNNReasoner(nn.Module):
         mode: str = "eval",
     ):
         
-        if self.ablate_plain_encoder:
-            raise ValueError(
-                "VAE source intervention requires the full VAE checkpoint"
-            )
-
         batch_size = len(subs)
         (
             _,
@@ -1037,23 +850,9 @@ class FMGNNReasoner(nn.Module):
         del q_rel
         row = nodes[:, 0]
         entity_state = self.entity_state(nodes[:, 1])
-        if self.fm_condition_hidden:
-            
-            
-            mu = hidden
-            logvar = torch.zeros_like(hidden)
-            corruption_mask = torch.zeros_like(hidden, dtype=torch.bool)
-        elif self.ablate_plain_encoder:
-            mu, corruption_mask = self.plain_candidate_encoder(
-                hidden, query_ctx[row], entity_state, corrupt=self.training
-            )
-            logvar = torch.zeros_like(mu)
-        else:
-            mu, logvar, corruption_mask = self.candidate_vae.encode(
-                hidden, query_ctx[row], entity_state, corrupt=self.training
-            )
-            if self.deterministic_vae:
-                logvar = torch.zeros_like(logvar)
+        mu, logvar, corruption_mask = self.candidate_vae.encode(
+            hidden, query_ctx[row], entity_state, corrupt=self.training
+        )
 
         if path_samples is None:
             path_samples = 1 if self.training else self.eval_path_samples
@@ -1065,22 +864,10 @@ class FMGNNReasoner(nn.Module):
         final_state_paths = []
         recon_hidden = None
         for path_index in range(path_samples):
-            if self.fm_condition_hidden:
-                z = hidden
-                if recon_hidden is None:
-                    recon_hidden = hidden
-            elif self.ablate_plain_encoder:
-                z = mu
-                if recon_hidden is None:
-                    recon_hidden = hidden
-            else:
-                should_sample = (
-                    not self.deterministic_vae
-                    and (self.training or sample_z or path_index > 0)
-                )
-                z = self.candidate_vae.reparameterize(mu, logvar, should_sample)
-                if recon_hidden is None:
-                    recon_hidden = self.candidate_vae.decode(z)
+            should_sample = self.training or sample_z or path_index > 0
+            z = self.candidate_vae.reparameterize(mu, logvar, should_sample)
+            if recon_hidden is None:
+                recon_hidden = self.candidate_vae.decode(z)
             x1 = self._integrate_scores(z, row, batch_size)
             final_score_paths.append(self._node_scores(nodes, x1, batch_size))
             latent_paths.append(z)
@@ -1256,9 +1043,6 @@ class FMGNNReasoner(nn.Module):
     def score_fm_loss(
         self, state: CandidateState, labels: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.disable_fm or self.static_scorer:
-            zero = state.scores.sum() * 0.0
-            return zero, zero
         row = state.nodes[:, 0]
         batch_size = labels.size(0)
         target, positive, negative, valid_rows = self._answer_target_logits(
@@ -1286,22 +1070,6 @@ class FMGNNReasoner(nn.Module):
         negative_weight = 0.5 / negative_count[row].clamp_min(1.0)
         node_weight = torch.where(positive, positive_weight, negative_weight)
         node_weight = node_weight * valid_rows[row].to(node_weight.dtype)
-
-        if self.ablate_direct_predictor:
-            
-            
-            
-            node_loss = (state.x1 - target).square().squeeze(-1)
-            row_loss = scatter(
-                node_weight * node_loss,
-                row,
-                dim=0,
-                dim_size=batch_size,
-                reduce="sum",
-            )
-            direct_loss = row_loss[valid_rows].mean()
-            zero = state.scores.sum() * 0.0
-            return direct_loss, zero
 
         uniform = torch.rand(batch_size, device=state.z.device)
         tau_row = uniform.pow(self.fm_source_power)
@@ -1372,20 +1140,8 @@ class FMGNNReasoner(nn.Module):
             weights.get("temperature", 1.0),
             int(weights.get("num_negatives", 64)),
         )
-        vae_rec = (
-            state.scores.sum() * 0.0
-            if self.ablate_plain_encoder or self.fm_condition_hidden
-            else self.vae_reconstruction_loss(state)
-        )
-        kl = (
-            state.scores.sum() * 0.0
-            if (
-                self.ablate_plain_encoder
-                or self.fm_condition_hidden
-                or self.deterministic_vae
-            )
-            else self.kl_loss(state)
-        )
+        vae_rec = self.vae_reconstruction_loss(state)
+        kl = self.kl_loss(state)
         fm, fm_source = self.score_fm_loss(state, labels)
         total = (
             weights.get("rec", 1.0) * rank_loss
@@ -1394,11 +1150,7 @@ class FMGNNReasoner(nn.Module):
             + weights.get("kl", 1e-4) * kl
             + weights.get("fm", 1.0) * fm
         )
-        latent_std = (
-            state.scores.sum() * 0.0
-            if self.ablate_plain_encoder or self.fm_condition_hidden
-            else torch.exp(0.5 * state.logvar).mean()
-        )
+        latent_std = torch.exp(0.5 * state.logvar).mean()
         score_move = (state.x1 - state.x0).abs().mean()
         return {
             "loss": total,

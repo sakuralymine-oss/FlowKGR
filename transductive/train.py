@@ -182,54 +182,9 @@ def parse_args():
     parser.add_argument("--ode_steps", type=int, default=4)
     parser.add_argument("--eval_path_samples", type=int, default=None)
     parser.add_argument("--feature_mask_rate", type=float, default=0.30)
-    parser.add_argument(
-        "--mask_rate_exp",
-        action="store_true",
-        help=(
-            "parameter-study mode for feature_mask_rate; only appends the "
-            "mask rate to checkpoint/result names so different rates do not "
-            "overwrite each other"
-        ),
-    )
     parser.add_argument("--fm_source_power", type=float, default=2.0)
     parser.add_argument("--fm_source_fraction", type=float, default=0.50)
     parser.add_argument("--target_negative_mass", type=float, default=0.05)
-    parser.add_argument(
-        "--deterministic_vae",
-        action="store_true",
-        help="strict deterministic denoising encoder: direct z output, no sampling or KL",
-    )
-    parser.add_argument(
-        "--static_scorer",
-        action="store_true",
-        help="replace ODE/FM with one vector-field evaluation at X=0 and tau=0",
-    )
-    parser.add_argument("--disable_fm", action="store_true")
-    parser.add_argument(
-        "--ablate_direct_predictor",
-        action="store_true",
-        help=(
-            "formal w/o-FM ablation: replace score-space FM/ODE with a "
-            "parameter-matched set-aware direct endpoint predictor trained "
-            "against the same answer target"
-        ),
-    )
-    parser.add_argument(
-        "--ablate_plain_encoder",
-        action="store_true",
-        help=(
-            "formal w/o-VAE ablation: replace the candidate VAE with a "
-            "deterministic encoder using the same candidate inputs"
-        ),
-    )
-    parser.add_argument(
-        "--fm_condition_hidden",
-        action="store_true",
-        help=(
-            "condition score FM directly on the raw candidate GNN state h_i; "
-            "bypasses the VAE, query-context input, and entity-state input"
-        ),
-    )
     parser.add_argument(
         "--analysis_all",
         action="store_true",
@@ -320,11 +275,6 @@ def parse_args():
     for key, fallback in RUNTIME_DEFAULTS.items():
         if getattr(args, key) is None:
             setattr(args, key, dataset_defaults.get(key, fallback))
-    if args.fm_condition_hidden:
-        
-        
-        args.eval_path_samples = 1
-
     if args.con_temperature <= 0:
         parser.error("--con_temperature must be positive")
     if args.ode_steps < 1 or args.eval_path_samples < 1 or args.layers < 1:
@@ -355,44 +305,6 @@ def parse_args():
         parser.error("analysis top-k values must be positive")
     if args.difficulty_max_depth < 1 or args.case_sample_count < 1:
         parser.error("difficulty depth and case sample count must be positive")
-    if args.static_scorer and args.disable_fm:
-        parser.error("--static_scorer and --disable_fm cannot be used together")
-    if args.ablate_direct_predictor and (args.static_scorer or args.disable_fm):
-        parser.error(
-            "--ablate_direct_predictor cannot be combined with "
-            "--static_scorer or --disable_fm"
-        )
-    if args.ablate_direct_predictor and args.deterministic_vae:
-        parser.error(
-            "run one formal ablation at a time; do not combine "
-            "--ablate_direct_predictor with --deterministic_vae"
-        )
-    if args.ablate_plain_encoder and (
-        args.ablate_direct_predictor
-        or args.deterministic_vae
-        or args.static_scorer
-        or args.disable_fm
-    ):
-        parser.error(
-            "run one formal ablation at a time; do not combine "
-            "--ablate_plain_encoder with another ablation flag"
-        )
-    if args.fm_condition_hidden and (
-        args.ablate_plain_encoder
-        or args.ablate_direct_predictor
-        or args.deterministic_vae
-        or args.static_scorer
-        or args.disable_fm
-    ):
-        parser.error(
-            "run one formal ablation at a time; do not combine "
-            "--fm_condition_hidden with another ablation flag"
-        )
-    if args.static_scorer and args.deterministic_vae:
-        parser.error(
-            "run one formal ablation at a time; do not combine "
-            "--static_scorer with --deterministic_vae"
-        )
     return args
 
 
@@ -433,12 +345,6 @@ def build_options(args, loader):
         "fm_source_power",
         "fm_source_fraction",
         "target_negative_mass",
-        "deterministic_vae",
-        "static_scorer",
-        "disable_fm",
-        "ablate_direct_predictor",
-        "ablate_plain_encoder",
-        "fm_condition_hidden",
         "unreached_score",
         "grad_clip",
     ):
@@ -496,21 +402,6 @@ def main():
         raise ValueError("diagnostic modes have been removed")
 
     run_tag = f"candidate_vae_condscorefm_nbf{opts.n_layer}"
-    if args.mask_rate_exp:
-        mask_tag = f"{args.feature_mask_rate:.2f}".replace(".", "p")
-        run_tag += f"_mask{mask_tag}"
-    if args.deterministic_vae:
-        run_tag += "_detDenoise"
-    if args.static_scorer:
-        run_tag += "_static"
-    if args.disable_fm:
-        run_tag += "_noFM"
-    if args.ablate_direct_predictor:
-        run_tag += "_directPredictor"
-    if args.ablate_plain_encoder:
-        run_tag += "_plainEncoder"
-    if args.fm_condition_hidden:
-        run_tag += "_hCondition"
     if args.remove_1hop_edges:
         run_tag += "_remove1hop"
     checkpoint = args.checkpoint or os.path.join(
@@ -530,19 +421,14 @@ def main():
         f"act={opts.act} one_shot_ppr_topk={opts.topk} "
         f"fact_ratio={args.fact_ratio:.4f} remove_1hop_edges={args.remove_1hop_edges} "
         f"ppr_alpha={args.ppr_alpha:.3f} ppr_iterations={args.ppr_iterations} "
-        f"loss={('rank+con+score_fm' if (opts.ablate_plain_encoder or opts.fm_condition_hidden) else 'rank+con+vae_rec+' + ('kl+direct_endpoint' if opts.ablate_direct_predictor else ('kl+static_score' if opts.static_scorer else 'kl+score_fm')))} "
+        f"loss=rank+con+vae_rec+kl+score_fm "
         f"weights=({opts.rec_weight},{opts.con_weight},{opts.vae_rec_weight},"
         f"{opts.kl_weight},{opts.fm_weight}) "
         f"mask={opts.feature_mask_rate:.2f} fm_source_power={opts.fm_source_power:.2f} "
         f"fm_source_fraction={opts.fm_source_fraction:.2f} "
         f"target_negative_mass={opts.target_negative_mass:.3f} "
         f"fm_warmup={opts.fm_warmup} fm_ramp={opts.fm_ramp} "
-        f"fm_max_weight={opts.fm_max_weight} ode_steps={opts.ode_steps} "
-        f"detVAE={opts.deterministic_vae} "
-        f"staticScorer={opts.static_scorer} noFM={opts.disable_fm} "
-        f"directPredictor={opts.ablate_direct_predictor} "
-        f"plainEncoder={opts.ablate_plain_encoder} "
-        f"hCondition={opts.fm_condition_hidden}\n"
+        f"fm_max_weight={opts.fm_max_weight} ode_steps={opts.ode_steps}\n"
     )
     analysis_requested = (
         args.analysis_all
