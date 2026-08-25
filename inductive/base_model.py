@@ -225,7 +225,6 @@ class BaseModel:
                         mode=data,
                         sample_z=False,
                         return_aux=False,
-                        diagnose_latent=False,
                     ).detach().cpu().numpy()
 
                     filters = np.zeros_like(labels, dtype=bool)

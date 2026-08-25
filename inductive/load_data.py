@@ -2,7 +2,6 @@
 
 import os
 from collections import defaultdict
-from contextlib import contextmanager
 from typing import Dict, List, Tuple
 import warnings  
 import numpy as np
@@ -330,78 +329,7 @@ class DataLoader:
         self._resplit_fact_train()
 
 
-    def structural_shortest_distance(
-        self, head: int, targets, max_depth: int = 8
-    ) -> int:
-        
-        head = int(head)
-        target_set = {int(value) for value in np.asarray(targets).reshape(-1)}
-        if head in target_set:
-            return 0
-        if not hasattr(self, "_analysis_observed_adj"):
-            adjacency = [[] for _ in range(self.n_ent)]
-            for src, _, dst in self.observed_forward:
-                src = int(src)
-                dst = int(dst)
-                adjacency[src].append(dst)
-                adjacency[dst].append(src)
-            self._analysis_observed_adj = adjacency
-        adjacency = self._analysis_observed_adj
-        frontier = {head}
-        visited = {head}
-        for depth in range(1, int(max_depth) + 1):
-            next_frontier = set()
-            for node in frontier:
-                for neighbor in adjacency[node]:
-                    if neighbor in visited:
-                        continue
-                    if neighbor in target_set:
-                        return depth
-                    visited.add(neighbor)
-                    next_frontier.add(neighbor)
-            if not next_frontier:
-                break
-            frontier = next_frontier
-        return -1
 
-    @contextmanager
-    def temporary_eval_edge_dropout(self, drop_rate: float, seed: int):
-        
-        drop_rate = float(drop_rate)
-        if not 0.0 <= drop_rate < 1.0:
-            raise ValueError('drop_rate must be in [0, 1)')
-
-        old_eval_KG = self.eval_KG
-        old_eval_sub = self.eval_sub
-        old_eval_transition = self.eval_transition
-        old_cache = self._ppr_cache_eval
-        try:
-            if drop_rate <= 0.0:
-                
-                
-                self._ppr_cache_eval = {}
-                yield len(self.observed_forward)
-                return
-
-            rng = np.random.default_rng(int(seed))
-            keep = rng.random(len(self.observed_forward)) >= drop_rate
-            if not np.any(keep):
-                
-                keep[rng.integers(0, len(keep))] = True
-            retained_forward = [
-                triple for flag, triple in zip(keep.tolist(), self.observed_forward)
-                if flag
-            ]
-            retained_triples = self.double_triples(retained_forward)
-            self.eval_KG, self.eval_sub = self.load_graph(retained_triples)
-            self.eval_transition = self._build_transition_matrix(self.eval_KG)
-            self._ppr_cache_eval = {}
-            yield len(retained_forward)
-        finally:
-            self.eval_KG = old_eval_KG
-            self.eval_sub = old_eval_sub
-            self.eval_transition = old_eval_transition
-            self._ppr_cache_eval = old_cache
 
     @staticmethod
     def get_filter(triples: List[List[int]]):

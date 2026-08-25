@@ -1,11 +1,8 @@
 
 
 import argparse
-import copy
-import gc
 import os
 import random
-import re
 
 import numpy as np
 import torch
@@ -36,7 +33,7 @@ DATASET_CONFIG = {
     "WN18RR_v4": (0.0020, 0.9940, 0.000140, 64, 5, 0.1555, "idd", 24, 500, 6),
     "fb237_v1": (0.0010, 0.9950, 0.000081, 48, 5, 0.30, "relu", 20, 500, 3),
     "fb237_v2": (0.0087, 0.9937, 0.000025, 16, 5, 0.3265, "relu", 20, 200, 5),
-    "fb237_v3": (0.0079, 0.9934, 0.000187, 48, 5, 0.4632, "relu", 20, 200, 7),
+    "fb237_v3": (0.0079, 0.9934, 0.000187, 48, 5, 0.4632, "relu", 10, 200, 7),
     "fb237_v4": (0.0010, 0.9950, 0.000186, 48, 5, 0.35, "relu", 20, 500, 7),
     "nell_v1": (0.0046, 0.9902, 0.000220, 32, 5, 0.3268, "relu", 20, 0.99, 6),
     "nell_v2": (0.0049, 0.9948, 0.000072, 16, 5, 0.3247, "relu", 100, 400, 3),
@@ -171,18 +168,8 @@ def config_dataset_name(name):
     return name if name in DATASET_CONFIG else base_dataset_name(name)
 
 
-def _parse_int_list(text):
-    values = [int(part.strip()) for part in str(text).split(",") if part.strip()]
-    if not values or any(value < 1 for value in values):
-        raise ValueError("expected a comma-separated list of positive integers")
-    return values
 
 
-def _parse_float_list(text):
-    values = [float(part.strip()) for part in str(text).split(",") if part.strip()]
-    if not values:
-        raise ValueError("expected a comma-separated list of numbers")
-    return values
 
 
 def parse_args():
@@ -292,99 +279,9 @@ def parse_args():
             "deterministic encoder using the same candidate inputs"
         ),
     )
-    parser.add_argument(
-        "--analysis_all",
-        action="store_true",
-        help="run all five checkpoint-only analysis experiments and exit",
-    )
-    parser.add_argument(
-        "--analysis_paper_all",
-        action="store_true",
-        help=(
-            "run the five paper-facing analyses added for latent states, "
-            "flow difficulty, incomplete-evidence robustness, efficiency, "
-            "and case study; training behavior is unchanged"
-        ),
-    )
-    parser.add_argument("--analyze_latent_states", action="store_true")
-    parser.add_argument("--analyze_flow_difficulty", action="store_true")
-    parser.add_argument("--analyze_robustness", action="store_true")
-    parser.add_argument("--analyze_efficiency", action="store_true")
-    parser.add_argument("--analyze_case_study", action="store_true")
-    parser.add_argument("--analyze_multi_answer_case", action="store_true")
-    parser.add_argument("--analyze_vae_sources", action="store_true")
-    parser.add_argument(
-        "--analyze_bottleneck",
-        action="store_true",
-        help=(
-            "checkpoint-only frozen-probe diagnostic for H -> Z -> X1; "
-            "does not change the trained reasoner"
-        ),
-    )
-    parser.add_argument("--bottleneck_probe_epochs", type=int, default=30)
-    parser.add_argument("--bottleneck_probe_lr", type=float, default=0.05)
-    parser.add_argument("--multi_case_topk", type=int, default=10)
-    parser.add_argument(
-        "--multi_case_query_index",
-        type=int,
-        default=None,
-        help="optional forward multi-answer dataset query index",
-    )
-    parser.add_argument("--analyze_path_samples", action="store_true")
-    parser.add_argument("--analyze_latent", action="store_true")
-    parser.add_argument("--analyze_flow", action="store_true")
-    parser.add_argument("--analyze_ode_steps", action="store_true")
-    parser.add_argument("--analyze_candidate_budget", action="store_true")
-    parser.add_argument(
-        "--analysis_split", choices=("valid", "test"), default="test"
-    )
-    parser.add_argument(
-        "--path_sample_values", type=str, default="1,2,4,8"
-    )
-    parser.add_argument(
-        "--flow_tau_values", type=str, default="0,0.25,0.5,0.75,1"
-    )
-    parser.add_argument(
-        "--ode_step_values", type=str, default="1,2,4,8"
-    )
-    parser.add_argument(
-        "--candidate_topk_values", type=str, default="0.03,0.05,0.07,0.10"
-    )
-    parser.add_argument("--analysis_file", type=str, default=None)
-    parser.add_argument("--latent_sample_count", type=int, default=8)
-    parser.add_argument("--latent_analysis_topk", type=int, default=10)
-    parser.add_argument("--difficulty_max_depth", type=int, default=8)
-    parser.add_argument(
-        "--robustness_drop_values", type=str, default="0,0.1,0.2,0.3,0.4"
-    )
-    parser.add_argument(
-        "--robustness_seeds", type=str, default="1234,2234,3234"
-    )
-    parser.add_argument("--case_sample_count", type=int, default=3)
-    parser.add_argument("--case_topk", type=int, default=5)
-    parser.add_argument(
-        "--case_query_indices",
-        type=str,
-        default=None,
-        help=(
-            "optional comma-separated dataset query indices; when omitted, "
-            "one representative single-answer and one multi-answer forward "
-            "query are selected by median deterministic FM gain"
-        ),
-    )
     parser.add_argument("--unreached_score", type=float, default=-1e9)
     parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--perf_file", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument(
-        "--oracle_checkpoint",
-        type=str,
-        default=None,
-        help=(
-            "second checkpoint used only by --eval_only to report the "
-            "answer-level union upper bound ORACLE_H@10"
-        ),
-    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--eval_only", action="store_true")
     parser.add_argument(
@@ -425,10 +322,6 @@ def parse_args():
 
     if args.dropout is not None and not 0.0 <= args.dropout < 1.0:
         parser.error("--dropout must be in [0, 1)")
-    if args.bottleneck_probe_epochs < 1:
-        parser.error("--bottleneck_probe_epochs must be positive")
-    if args.bottleneck_probe_lr <= 0.0:
-        parser.error("--bottleneck_probe_lr must be positive")
     if args.con_temperature <= 0:
         parser.error("--con_temperature must be positive")
     if args.ode_steps < 1 or args.eval_path_samples < 1 or args.layers < 1:
@@ -471,14 +364,6 @@ def parse_args():
         parser.error("--target_negative_mass must be in (0, 0.5)")
     if args.fm_warmup < 0 or args.fm_ramp < 0:
         parser.error("--fm_warmup and --fm_ramp must be non-negative")
-    if args.latent_sample_count < 2:
-        parser.error("--latent_sample_count must be at least two")
-    if args.multi_case_topk < 1:
-        parser.error("--multi_case_topk must be positive")
-    if args.latent_analysis_topk < 1 or args.case_topk < 1:
-        parser.error("analysis top-k values must be positive")
-    if args.difficulty_max_depth < 1 or args.case_sample_count < 1:
-        parser.error("difficulty depth and case sample count must be positive")
     if args.static_scorer and args.disable_fm:
         parser.error("--static_scorer and --disable_fm cannot be used together")
     if args.ablate_direct_predictor and (args.static_scorer or args.disable_fm):
@@ -506,57 +391,13 @@ def parse_args():
             "run one formal ablation at a time; do not combine "
             "--static_scorer with --deterministic_vae"
         )
-    if args.oracle_checkpoint and not args.eval_only:
-        parser.error("--oracle_checkpoint is a read-only --eval_only diagnostic")
     if args.local_relation_context and not args.inductive:
         parser.error("--local_relation_context currently requires --inductive")
     return args
 
 
-def checkpoint_layer_count(saved):
-    
-    state = saved.get("model_state_dict", saved)
-    layer_ids = []
-    for name in state:
-        match = re.search(r"(?:^|\.)layers\.(\d+)\.", str(name))
-        if match:
-            layer_ids.append(int(match.group(1)))
-    if not layer_ids:
-        raise ValueError(
-            "cannot infer GNN layers from --oracle_checkpoint; "
-            "expected parameter names containing layers.<index>"
-        )
-    return max(layer_ids) + 1
 
 
-def format_oracle_h10(prefix, ranks_a, ranks_b):
-    
-    ranks_a = np.asarray(ranks_a, dtype=np.float64)
-    ranks_b = np.asarray(ranks_b, dtype=np.float64)
-    if ranks_a.shape != ranks_b.shape:
-        raise ValueError(
-            f"oracle rank count mismatch: A={ranks_a.size}, B={ranks_b.size}"
-        )
-    hit_a = ranks_a <= 10
-    hit_b = ranks_b <= 10
-    both = hit_a & hit_b
-    a_only = hit_a & ~hit_b
-    b_only = ~hit_a & hit_b
-    neither = ~hit_a & ~hit_b
-    oracle = hit_a | hit_b
-    n_answers = max(int(ranks_a.size), 1)
-    h10_a = float(hit_a.mean()) if ranks_a.size else 0.0
-    h10_b = float(hit_b.mean()) if ranks_b.size else 0.0
-    oracle_h10 = float(oracle.mean()) if ranks_a.size else 0.0
-    return (
-        f"[ORACLE {prefix}] A_H@10:{h10_a:.4f} B_H@10:{h10_b:.4f} "
-        f"ORACLE_H@10:{oracle_h10:.4f} "
-        f"UPLIFT:{oracle_h10 - max(h10_a, h10_b):+.4f} "
-        f"BOTH:{int(both.sum())}/{n_answers} "
-        f"A_ONLY:{int(a_only.sum())}/{n_answers} "
-        f"B_ONLY:{int(b_only.sum())}/{n_answers} "
-        f"NEITHER:{int(neither.sum())}/{n_answers}"
-    )
 
 
 def build_options(args, loader):
@@ -660,27 +501,6 @@ def main():
     opts = build_options(args, loader)
     model = BaseModel(opts, loader)
 
-    if any(
-        (
-            args.analyze_bottleneck,
-            args.analysis_all,
-            args.analysis_paper_all,
-            args.analyze_path_samples,
-            args.analyze_latent,
-            args.analyze_flow,
-            args.analyze_ode_steps,
-            args.analyze_candidate_budget,
-            args.analyze_latent_states,
-            args.analyze_flow_difficulty,
-            args.analyze_robustness,
-            args.analyze_efficiency,
-            args.analyze_case_study,
-            args.analyze_multi_answer_case,
-            args.analyze_vae_sources,
-            bool(args.oracle_checkpoint),
-        )
-    ):
-        raise ValueError("diagnostic modes have been removed")
 
     run_tag = f"candidate_vae_condscorefm_nbf{opts.n_layer}"
     if args.inductive:
@@ -718,383 +538,6 @@ def main():
         args.data_path, "saveModel", f"{run_tag}_best.pt"
     )
     os.makedirs(os.path.dirname(os.path.abspath(checkpoint)), exist_ok=True)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    perf_file = args.perf_file or os.path.join(
-        project_root, "results", name, f"{run_tag}_results.txt"
-    )
-    os.makedirs(os.path.dirname(os.path.abspath(perf_file)), exist_ok=True)
-
-    config = (
-        f"dataset={name} lr={opts.lr:.4g} decay={opts.decay_rate:.4g} "
-        f"wd={opts.lamb:.6g} dim={opts.hidden_dim} attn={opts.attn_dim} "
-        f"layers={opts.n_layer} batch={opts.n_batch} dropout={opts.dropout:.4f} "
-        f"act={opts.act} one_shot_ppr_topk={opts.topk} "
-        f"inductive={args.inductive} "
-        f"fact_ratio={args.fact_ratio:.4f} remove_1hop_edges={args.remove_1hop_edges} "
-        f"ppr_alpha={args.ppr_alpha:.3f} ppr_iterations={args.ppr_iterations} "
-        f"local_relation_context={args.local_relation_context} "
-        f"loss={('rank+con+score_fm' if opts.ablate_plain_encoder else 'rank+con+vae_rec+' + ('kl+direct_endpoint' if opts.ablate_direct_predictor else ('kl+static_score' if opts.static_scorer else 'kl+score_fm')))} "
-        f"weights=({opts.rec_weight},{opts.con_weight},{opts.vae_rec_weight},"
-        f"{opts.kl_weight},{opts.fm_weight}) "
-        f"con_neg={opts.con_negatives} "
-        f"con_hard_schedule=({opts.con_hard_warmup_fraction:.2f},"
-        f"{opts.con_hard_ramp_fraction:.2f},{opts.con_hard_final_ratio:.2f}) "
-        f"top10=(w{opts.top10_loss_weight:.3f},m{opts.top10_margin:.3f},"
-        f"warm{opts.top10_warmup_fraction:.2f},ramp{opts.top10_ramp_fraction:.2f}) "
-        f"mask={opts.feature_mask_rate:.2f} fm_source_power={opts.fm_source_power:.2f} "
-        f"fm_source_fraction={opts.fm_source_fraction:.2f} "
-        f"target_negative_mass={opts.target_negative_mass:.3f} "
-        f"fm_warmup={opts.fm_warmup} fm_ramp={opts.fm_ramp} "
-        f"fm_max_weight={opts.fm_max_weight} ode_steps={opts.ode_steps} "
-        f"ema={opts.ema} ema_decay={opts.ema_decay:.6f} "
-        f"eval_path_samples={opts.eval_path_samples} "
-        f"detVAE={opts.deterministic_vae} "
-        f"staticScorer={opts.static_scorer} noFM={opts.disable_fm} "
-        f"directPredictor={opts.ablate_direct_predictor} "
-        f"plainEncoder={opts.ablate_plain_encoder}\n"
-    )
-    if args.analyze_bottleneck:
-        if not os.path.exists(checkpoint):
-            raise FileNotFoundError(
-                f"checkpoint not found for bottleneck diagnostic: {checkpoint}"
-            )
-        saved = torch.load(checkpoint, map_location=f"cuda:{args.gpu}")
-        model.load_checkpoint_weights(saved, resume=False)
-
-        rows, metadata = model.evaluate_stage_bottleneck(
-            data=args.analysis_split,
-            probe_epochs=args.bottleneck_probe_epochs,
-            probe_lr=args.bottleneck_probe_lr,
-        )
-        diagnostic_text = model.format_analysis_rows(
-            f"{args.analysis_split.upper()} H-Z-X1 BOTTLENECK DIAGNOSTIC",
-            rows,
-            ["Stage", "MRR", "H1", "Margin"],
-        )
-        diagnostic_text += (
-            f"\nProbeEpochs\t{metadata['probe_epochs']}"
-            f"\nProbeLR\t{metadata['probe_lr']:.6f}"
-            f"\nProbeTrainLoss\t{metadata['probe_train_loss']:.6f}"
-            f"\nTrainReachedPositiveNodes\t"
-            f"{metadata['train_reached_positive_nodes']}"
-            f"\nTrainNegativeNodes\t{metadata['train_negative_nodes']}"
-            f"\nTIME\t{metadata['elapsed']:.6f}\n"
-        )
-
-        diagnostic_file = args.analysis_file or os.path.join(
-            project_root,
-            "results",
-            name,
-            f"{run_tag}_bottleneck_{args.analysis_split}.txt",
-        )
-        os.makedirs(
-            os.path.dirname(os.path.abspath(diagnostic_file)), exist_ok=True
-        )
-        with open(diagnostic_file, "w", encoding="utf-8") as handle:
-            handle.write(args.data_path + "\n")
-            handle.write(config)
-            handle.write(diagnostic_text)
-        return
-
-    analysis_requested = (
-        args.analysis_all
-        or args.analysis_paper_all
-        or args.analyze_path_samples
-        or args.analyze_latent
-        or args.analyze_flow
-        or args.analyze_ode_steps
-        or args.analyze_candidate_budget
-        or args.analyze_latent_states
-        or args.analyze_flow_difficulty
-        or args.analyze_robustness
-        or args.analyze_efficiency
-        or args.analyze_case_study
-        or args.analyze_multi_answer_case
-        or args.analyze_vae_sources
-    )
-    if args.inductive and analysis_requested:
-        raise ValueError(
-            "checkpoint-only analysis flags are not enabled in --inductive mode; "
-            "run standard training/evaluation first"
-        )
-    if analysis_requested:
-        if not os.path.exists(checkpoint):
-            raise FileNotFoundError(
-                f"checkpoint not found for analysis: {checkpoint}"
-            )
-        saved = torch.load(checkpoint, map_location=f"cuda:{args.gpu}")
-        model.load_checkpoint_weights(saved, resume=False)
-        split = args.analysis_split
-        blocks = []
-
-        if args.analysis_all or args.analyze_path_samples:
-            sample_counts = _parse_int_list(args.path_sample_values)
-            rows = model.evaluate_path_sample_sweep(split, sample_counts)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} PATH-SAMPLE SWEEP",
-                    rows,
-                    ["samples", "MRR", "H1", "H10", "time", "peak_gb"],
-                )
-            )
-
-        if args.analysis_all or args.analyze_latent:
-            result = model.evaluate_latent_condition_variants(split)
-            rows = [
-                {"variant": name, **result[name]}
-                for name in ("FullZ", "ZeroZ", "ShuffledZ")
-            ]
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} LATENT-CONDITION DIAGNOSTIC",
-                    rows,
-                    ["variant", "MRR", "H1", "H10"],
-                )
-            )
-
-        if args.analysis_all or args.analyze_flow:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            rows, elapsed = model.evaluate_flow_evolution(split, tau_values)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} FLOW-EVOLUTION",
-                    rows,
-                    [
-                        "tau",
-                        "MRR",
-                        "MR",
-                        "H1",
-                        "H3",
-                        "H10",
-                        "MoveFromX0",
-                        "DistToX1",
-                        "GoldProb",
-                        "GoldMargin",
-                        "GoldMarginCov",
-                    ],
-                )
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analysis_all or args.analyze_ode_steps:
-            step_counts = _parse_int_list(args.ode_step_values)
-            rows = model.evaluate_ode_step_sweep(split, step_counts)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} ODE-STEP SWEEP",
-                    rows,
-                    ["steps", "MRR", "H1", "H10", "time", "peak_gb"],
-                )
-            )
-
-        if args.analysis_all or args.analyze_candidate_budget:
-            budgets = _parse_float_list(args.candidate_topk_values)
-            if any(value <= 0.0 for value in budgets):
-                raise ValueError("candidate_topk_values must all be positive")
-            rows = model.evaluate_candidate_budget_sweep(split, budgets)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} CANDIDATE-BUDGET SWEEP",
-                    rows,
-                    [
-                        "budget",
-                        "candidates",
-                        "PPRGraphAnsRec",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "time",
-                        "peak_gb",
-                    ],
-                )
-            )
-
-        if args.analysis_paper_all or args.analyze_latent_states:
-            rows, corr, elapsed = model.evaluate_latent_reasoning_states(
-                split,
-                sample_count=args.latent_sample_count,
-                topk=args.latent_analysis_topk,
-            )
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} LATENT-REASONING-STATE ANALYSIS",
-                    rows,
-                    [
-                        "answers",
-                        "queries",
-                        "LatentD",
-                        "PredJSD",
-                        "AR10_K1",
-                        "AR10_K",
-                        "DeltaAR10",
-                        "GoldCov10_K",
-                    ],
-                )
-                + f"\nLatentD_PredJSD_Corr\t{corr:.6f}"
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analysis_paper_all or args.analyze_flow_difficulty:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            rows, elapsed = model.evaluate_flow_by_query_difficulty(
-                split,
-                tau_values,
-                max_depth=args.difficulty_max_depth,
-            )
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} FLOW-DYNAMICS BY QUERY DIFFICULTY",
-                    rows,
-                    [
-                        "difficulty",
-                        "queries",
-                        "tau",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "GoldProb",
-                        "MoveFromX0",
-                        "DistToX1",
-                    ],
-                )
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analysis_paper_all or args.analyze_robustness:
-            drop_values = _parse_float_list(args.robustness_drop_values)
-            if any(value < 0.0 or value >= 1.0 for value in drop_values):
-                raise ValueError("robustness drop values must lie in [0, 1)")
-            robustness_seeds = _parse_int_list(args.robustness_seeds)
-            raw_rows, summary_rows = model.evaluate_incomplete_evidence_robustness(
-                split,
-                drop_values,
-                robustness_seeds,
-            )
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} INCOMPLETE-EVIDENCE ROBUSTNESS SUMMARY",
-                    summary_rows,
-                    [
-                        "drop",
-                        "MRR_mean",
-                        "MRR_std",
-                        "H10_mean",
-                        "H10_std",
-                        "PPRRecall_mean",
-                        "RelMRRDrop",
-                    ],
-                )
-                + "\n\n"
-                + model.format_analysis_rows(
-                    f"{split.upper()} INCOMPLETE-EVIDENCE ROBUSTNESS RAW",
-                    raw_rows,
-                    [
-                        "drop",
-                        "seed",
-                        "retained_edges",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "PPRGraphAnsRec",
-                        "time",
-                    ],
-                )
-            )
-
-        if args.analysis_paper_all or args.analyze_efficiency:
-            step_counts = _parse_int_list(args.ode_step_values)
-            rows = model.evaluate_efficiency_scalability(split, step_counts)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} EFFICIENCY-AND-SCALABILITY",
-                    rows,
-                    [
-                        "steps",
-                        "NFE",
-                        "MRR",
-                        "H1",
-                        "H10",
-                        "EndpointError",
-                        "fm_ms_per_query",
-                        "ms_per_query",
-                        "queries_per_sec",
-                        "peak_gb",
-                        "params_m",
-                    ],
-                )
-            )
-
-
-        if args.analyze_vae_sources:
-            rows, elapsed = model.evaluate_vae_source_interventions(split)
-            blocks.append(
-                model.format_analysis_rows(
-                    f"{split.upper()} VAE-SOURCE INTERVENTION",
-                    rows,
-                    ["variant", "MRR", "H1", "H10", "DeltaMRR"],
-                )
-                + f"\nTIME\t{elapsed:.6f}"
-            )
-
-        if args.analyze_multi_answer_case:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            case = model.evaluate_multi_answer_flow_case(
-                split,
-                tau_values,
-                topk=args.multi_case_topk,
-                case_index=args.multi_case_query_index,
-            )
-            blocks.append(
-                model.format_multi_answer_flow_case(
-                    f"{split.upper()} MULTI-ANSWER FLOW CASE", case
-                )
-            )
-
-        if args.analysis_paper_all or args.analyze_case_study:
-            tau_values = _parse_float_list(args.flow_tau_values)
-            case_indices = (
-                _parse_int_list(args.case_query_indices)
-                if args.case_query_indices
-                else None
-            )
-            cases = model.evaluate_case_study(
-                split,
-                tau_values,
-                sample_count=args.case_sample_count,
-                topk=args.case_topk,
-                case_indices=case_indices,
-            )
-            blocks.append(
-                model.format_case_study(
-                    f"{split.upper()} REPRESENTATIVE CASE STUDY", cases
-                )
-            )
-
-        analysis_text = "\n\n".join(blocks) + "\n"
-        paper_analysis_requested = (
-            args.analysis_paper_all
-            or args.analyze_latent_states
-            or args.analyze_flow_difficulty
-            or args.analyze_robustness
-            or args.analyze_efficiency
-            or args.analyze_case_study
-            or args.analyze_multi_answer_case
-            or args.analyze_vae_sources
-        )
-        default_analysis_name = (
-            f"{run_tag}_paper_analysis.txt"
-            if paper_analysis_requested
-            else f"{run_tag}_analysis.txt"
-        )
-        analysis_file = args.analysis_file or os.path.join(
-            project_root, "results", name, default_analysis_name
-        )
-        os.makedirs(os.path.dirname(os.path.abspath(analysis_file)), exist_ok=True)
-        with open(analysis_file, "w", encoding="utf-8") as handle:
-            handle.write(args.data_path + "\n")
-            handle.write(config)
-            handle.write(analysis_text)
-        return
 
     if args.eval_only:
         if not os.path.exists(checkpoint):
@@ -1138,8 +581,6 @@ def main():
         valid_str = model.format_metrics("VALID", valid_metrics)
         epoch_line = f"[EPOCH {epoch}] LOSS:{train_loss:.4f}\t{valid_str}"
         print(epoch_line)
-        with open(perf_file, "a", encoding="utf-8") as handle:
-            handle.write(epoch_line + "\n")
         if valid_metrics[0] > best_mrr:
             best_mrr = valid_metrics[0]
             best_epoch = epoch
@@ -1161,9 +602,7 @@ def main():
     model.load_checkpoint_weights(saved, resume=True)
     test_metrics = model.evaluate_split("test")
     test_str = model.format_metrics("TEST", test_metrics)
-    final = f"[FINAL BEST EPOCH {best_epoch}] {best_valid}\t{test_str}\n"
-    with open(perf_file, "a", encoding="utf-8") as handle:
-        handle.write(final)
+    print(f"[FINAL BEST EPOCH {best_epoch}] {best_valid}\t{test_str}")
 
 
 if __name__ == "__main__":
